@@ -1,0 +1,49 @@
+官方文档的注释：
+是用来管理HTTP和SPDY连接的重用以减少网络延迟。共享同一连接地址
+的HTTP请求可能共享{@link Connection}。此类实现了为将来使用而保持打开的连接的策略。
+
+打开Okhttp3的ConnectionPool源码，这是一个final类：public final class ConnectionPool{}
+final:被final修饰的类不能被继承、被final修饰的属性是常量，不可被修改、被final修饰的
+方法不能被复写；
+里面使用了线程池来管理网络请求：后台线程会清理掉过期的线程，但是每个连接池会至少有一个线程，方便任务过来时，不至于重新创建：
+private static final Executor executor = new ThreadPoolExecutor(0 /* corePoolSize */,
+      Integer.MAX_VALUE /* maximumPoolSize */, 60L /* keepAliveTime */, TimeUnit.SECONDS,
+      new SynchronousQueue<Runnable>(), Util.threadFactory("OkHttp ConnectionPool", true));
+      corePoolSize：核心线程池为0，
+maximumPoolSize：最大的线城池数量；
+workQueue：用于缓存任务的阻塞队列：
+这三者之间的关系是：
+（1）如果没有空闲的线程执行该任务且当前运行的线程数少于corePoolSize，则添加新的线程执行该任务。
+（2）如果没有空闲的线程执行该任务且当前的线程数等于corePoolSize同时阻塞队列未满，则将任务入队列，而不添加新的线程。
+（3）如果没有空闲的线程执行该任务且阻塞队列已满同时池中的线程数小于maximumPoolSize，则创建新的线程执行任务。
+（4）如果没有空闲的线程执行该任务且阻塞队列已满同时池中的线程数等于maximumPoolSize，则根据构造函数中的handler指定的策略来拒绝新的任务。
+
+在http中采用了SPYD提高网络的请求性能的协议；
+通过cleanupRunner标志位去判断是否要清理掉过期的线程；
+返回连接的总数量：
+public synchronized int connectionCount() {
+    return connections.size();
+  }
+  
+  /** Returns a recycled connection to {@code address}, or null if no such connection exists. */
+  RealConnection get(Address address, StreamAllocation streamAllocation) {
+    assert (Thread.holdsLock(this));
+    for (RealConnection connection : connections) {
+      if (connection.allocations.size() < connection.allocationLimit
+          && address.equals(connection.route().address)
+          && !connection.noNewStreams) {
+        streamAllocation.acquire(connection);
+        return connection;
+      }
+    }
+    return null;
+  }
+  
+void put(RealConnection connection) {
+    assert (Thread.holdsLock(this));
+    if (!cleanupRunning) {
+      cleanupRunning = true;
+      executor.execute(cleanupRunnable);
+    }
+    connections.add(connection);
+  }
